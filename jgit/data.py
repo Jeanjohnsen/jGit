@@ -4,13 +4,24 @@ import os
 from collections import namedtuple
 
 
-GIT_DIR = ".jgit"
+# The on-disk directory. Defaults to ".git" but the CLI may switch it to
+# ".jgit" (via --jgit or the JGIT_DIR env var) before anything touches disk.
+GIT_DIR = ".git"
+
+# Dropped inside GIT_DIR on init so jGit can tell its own repositories apart
+# from a real Git repo that also lives in ".git". Real Git never creates it,
+# which is the whole safety guarantee: no marker, hands off.
+MARKER = "jgit-format"
+FORMAT_VERSION = "2"
+
 RefValue = namedtuple("RefValue", ["symbolic", "value"])
 
 
 def init():
     os.makedirs(GIT_DIR)
     os.makedirs(f"{GIT_DIR}/objects")
+    with open(f"{GIT_DIR}/{MARKER}", "w", encoding="utf-8") as f:
+        f.write(FORMAT_VERSION + "\n")
 
 
 def update_ref(ref, value, deref=True):
@@ -26,6 +37,13 @@ def update_ref(ref, value, deref=True):
     os.makedirs(os.path.dirname(ref_path), exist_ok=True)
     with open(ref_path, "w") as f:
         f.write(value)
+
+
+def delete_ref(ref, deref=True):
+    ref = get_ref_internal(ref, deref)[0]
+    ref_path = f"{GIT_DIR}/{ref}"
+    if os.path.isfile(ref_path):
+        os.remove(ref_path)
 
 
 def get_ref(ref, deref=True):
@@ -49,18 +67,34 @@ def get_ref_internal(ref, deref=True):
     return ref, RefValue(symbolic=symbolic, value=value)
 
 
-def iter_refs(predix='', deref=True):
-
+def iter_refs(prefix="", deref=True):
     refs = ["HEAD"]
 
     for root, _, filenames in os.walk(f"{GIT_DIR}/refs/"):
-        root = os.path.relpath(root, GIT_DIR)
+        # os.walk hands back OS-specific separators; refs always use "/"
+        root = os.path.relpath(root, GIT_DIR).replace("\\", "/")
         refs.extend(f"{root}/{name}" for name in filenames)
 
     for refname in refs:
-        if not refname in refs:
+        if not refname.startswith(prefix):
             continue
-        yield refname, get_ref(refname, deref=deref)
+        ref = get_ref(refname, deref=deref)
+        if ref.value:
+            yield refname, ref
+
+
+def resolve_prefix(prefix):
+    """Expand an abbreviated object id. None if missing or ambiguous."""
+    try:
+        matches = [o for o in os.listdir(f"{GIT_DIR}/objects") if o.startswith(prefix)]
+    except FileNotFoundError:
+        return None
+    return matches[0] if len(matches) == 1 else None
+
+
+def object_id(data, type_="blob"):
+    obj = type_.encode() + b"\x00" + data
+    return hashlib.sha1(obj).hexdigest()
 
 
 def hash_object(data, type_="blob"):

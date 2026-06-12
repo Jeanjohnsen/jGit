@@ -5,3 +5,7 @@ __pycache__
 .jgit/
 .venv
 .venv/*
+.history
+.claude
+.pytest_cache
+test_repo
